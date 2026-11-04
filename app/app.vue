@@ -1,4 +1,6 @@
-<script setup>
+<script setup lang="ts">
+import { ref } from "vue";
+import { useHead } from "@unhead/vue";
 import { useStockScreener } from "./lib/useStockScreener";
 
 useHead({
@@ -27,8 +29,8 @@ const {
   scan,
 } = useStockScreener();
 
-const searchInput = ref(null);
-const suggestionsList = ref(null);
+const searchInput = ref<HTMLInputElement | null>(null);
+const suggestionsList = ref<HTMLUListElement | null>(null);
 
 const percent = new Intl.NumberFormat("id-ID", {
   style: "percent",
@@ -58,7 +60,7 @@ const rupiah = new Intl.NumberFormat("id-ID", {
         @focusout="onSearchBlur"
         @keydown.esc="
           closeSuggestions();
-          searchInput.focus();
+          searchInput?.focus();
         "
       >
         <label class="control-label" for="stock-query">Cari saham</label>

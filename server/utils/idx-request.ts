@@ -1,3 +1,4 @@
+import { createError, setResponseHeader, setResponseStatus } from "h3";
 import type { H3Event } from "h3";
 
 export async function idxRequest(event: H3Event, path: string, method: "GET" | "POST", query?: { symbol: string }) {

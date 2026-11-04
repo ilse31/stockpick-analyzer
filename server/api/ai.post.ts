@@ -1,3 +1,5 @@
+import { createError, defineEventHandler, getHeader, getRequestURL, readBody, setResponseHeader } from 'h3'
+
 type ProviderResponse = {
   data?: unknown
   choices?: Array<{ message?: { content?: unknown } }>

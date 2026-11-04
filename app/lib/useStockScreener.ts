@@ -1,15 +1,18 @@
 import { computed, ref, shallowRef } from 'vue'
+import { $fetch } from 'ofetch'
+import type { AiContext, AiUniverse, Horizon, ScanResult, Stock, StockResult } from '../types/stock'
+import { requestError } from './requestError'
 
 export function useStockScreener() {
-  const horizon = ref('1')
-  const snapshot = shallowRef(null)
-  const stockResult = shallowRef(null)
-  const directory = shallowRef(null)
+  const horizon = ref<Horizon>('1')
+  const snapshot = shallowRef<ScanResult | null>(null)
+  const stockResult = shallowRef<StockResult | null>(null)
+  const directory = shallowRef<Stock[] | null>(null)
   const query = ref('')
   const showSuggestions = ref(false)
   const directoryLoading = ref(false)
   const directoryError = ref(false)
-  const pending = ref('')
+  const pending = ref<'' | 'scan' | 'search'>('')
   const errorMessage = ref('')
 
   const suggestions = computed(() => {
@@ -23,13 +26,13 @@ export function useStockScreener() {
 
   const candidates = computed(() =>
     pending.value ? [] : (stockResult.value ?? snapshot.value)?.ranks[horizon.value] ?? [])
-  const aiContext = computed(() => {
+  const aiContext = computed<AiContext | null>(() => {
     const active = stockResult.value ?? snapshot.value
     if (!active || pending.value) return null
     return {
       date: active.date,
       horizon: horizon.value,
-      stock: active.stock,
+      stock: 'stock' in active ? active.stock : undefined,
       candidates: candidates.value.map(({ symbol, close, probability, change, tp, tp_hit, tp_n, accuracy, test_n, plan }) => ({
         symbol, close, probability, change, tp, tp_hit, tp_n, accuracy, test_n, plan,
       })),
@@ -64,7 +67,7 @@ export function useStockScreener() {
     directoryLoading.value = true
     directoryError.value = false
     try {
-      directory.value = await $fetch('/api/stocks')
+      directory.value = await $fetch<Stock[]>('/api/stocks')
     } catch {
       directoryError.value = true
     } finally {
@@ -76,15 +79,16 @@ export function useStockScreener() {
     showSuggestions.value = false
   }
 
-  function onSearchBlur(event) {
-    if (!event.currentTarget.contains(event.relatedTarget)) closeSuggestions()
+  function onSearchBlur(event: FocusEvent) {
+    if (!(event.currentTarget instanceof Node && event.relatedTarget instanceof Node
+        && event.currentTarget.contains(event.relatedTarget))) closeSuggestions()
   }
 
-  async function search(symbol) {
+  async function search(symbol?: string) {
     if (pending.value) return
     const term = query.value.trim().toUpperCase()
     const match = symbol ?? directory.value?.find(stock => stock.symbol === term)?.symbol
-      ?? (suggestions.value.length === 1 ? suggestions.value[0].symbol : null)
+      ?? (suggestions.value.length === 1 ? suggestions.value[0]?.symbol : null)
     if (!match && (suggestions.value.length > 1 || !/^[A-Z0-9]{1,12}$/.test(term))) {
       showSuggestions.value = true
       return
@@ -96,9 +100,9 @@ export function useStockScreener() {
     stockResult.value = null
     errorMessage.value = ''
     try {
-      stockResult.value = await $fetch('/api/stock', { query: { symbol: query.value } })
+      stockResult.value = await $fetch<StockResult>('/api/stock', { query: { symbol: query.value } })
     } catch (error) {
-      errorMessage.value = error.data?.error || error.data?.message || 'Pencarian gagal. Coba lagi.'
+      errorMessage.value = requestError(error, 'Pencarian gagal. Coba lagi.')
     } finally {
       pending.value = ''
     }
@@ -109,13 +113,14 @@ export function useStockScreener() {
     errorMessage.value = ''
   }
 
-  async function loadAiUniverse() {
+  async function loadAiUniverse(): Promise<AiUniverse> {
     const selected = horizon.value
     if (pending.value) throw new Error('Tunggu pemindaian atau pencarian yang sedang berjalan.')
     if (!snapshot.value) await scan()
-    const stocks = snapshot.value?.universe?.[selected]
-    if (!stocks?.length) throw new Error(errorMessage.value || 'Belum ada saham dengan data cukup untuk horizon ini.')
-    return { date: snapshot.value.date, horizon: selected, stocks }
+    const current = snapshot.value
+    const stocks = current?.universe?.[selected]
+    if (!current || !stocks?.length) throw new Error(errorMessage.value || 'Belum ada saham dengan data cukup untuk horizon ini.')
+    return { date: current.date, horizon: selected, stocks }
   }
 
   async function scan() {
@@ -124,9 +129,9 @@ export function useStockScreener() {
     stockResult.value = null
     errorMessage.value = ''
     try {
-      snapshot.value = await $fetch('/api/scan', { method: 'POST' })
+      snapshot.value = await $fetch<ScanResult>('/api/scan', { method: 'POST' })
     } catch (error) {
-      errorMessage.value = error.data?.error || error.data?.message || 'Pemindaian gagal. Coba lagi.'
+      errorMessage.value = requestError(error, 'Pemindaian gagal. Coba lagi.')
     } finally {
       pending.value = ''
     }

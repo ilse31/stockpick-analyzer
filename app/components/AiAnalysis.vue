@@ -1,18 +1,30 @@
-<script setup>
-const props = defineProps({
-  context: { type: Object, default: null },
-  loadUniverse: { type: Function, required: true },
-  busy: Boolean,
-})
+<script setup lang="ts">
+import { ref, shallowRef } from 'vue'
+import { $fetch } from 'ofetch'
+import { requestError } from '../lib/requestError'
+import type { AiContext, AiUniverse } from '../types/stock'
+
+type AiAction = 'models' | 'analyze' | 'rank'
+type Pick = { symbol: string; reason: string }
+type AiResponse = { models: string[] } | { picks: Pick[] } | { text: string }
+type AiResult =
+  | { kind: 'rank'; picks: (Pick & { qualified: boolean })[]; model: string; context: AiUniverse }
+  | { kind: 'analyze'; text: string; model: string; context?: AiContext | null }
+
+const props = defineProps<{
+  context?: AiContext | null
+  loadUniverse: () => Promise<AiUniverse>
+  busy?: boolean
+}>()
 
 const baseUrl = ref('')
 const apiKey = ref('')
-const models = ref([])
+const models = ref<string[]>([])
 const model = ref('')
 const question = ref('Jelaskan hasil screener, kriteria entry, dan risiko utamanya.')
-const pending = ref('')
+const pending = ref<AiAction | ''>('')
 const errorMessage = ref('')
-const result = shallowRef(null)
+const result = shallowRef<AiResult | null>(null)
 
 function resetModels() {
   models.value = []
@@ -21,7 +33,7 @@ function resetModels() {
   errorMessage.value = ''
 }
 
-async function callAi(action) {
+async function callAi(action: AiAction) {
   if (pending.value) return
   pending.value = action
   errorMessage.value = ''
@@ -30,28 +42,31 @@ async function callAi(action) {
 
   const selectedModel = model.value
   try {
-    const context = action === 'rank' ? await props.loadUniverse() : props.context
-    const data = await $fetch('/api/ai', {
+    const universe = action === 'rank' ? await props.loadUniverse() : null
+    const context = props.context
+    const data = await $fetch<AiResponse>('/api/ai', {
       method: 'POST',
       body: {
         action, baseUrl: baseUrl.value.trim(), apiKey: apiKey.value,
         model: selectedModel,
         question: action === 'rank' ? 'Pindai semua saham dalam data dan urutkan kandidat untuk horizon ini.' : question.value.trim(),
-        context: action !== 'models' && context ? JSON.stringify(context) : '',
+        context: action !== 'models' && (universe ?? context) ? JSON.stringify(universe ?? context) : '',
       },
     })
-    if (action === 'models') {
+    if (action === 'models' && 'models' in data) {
       models.value = data.models
       if (!models.value.length) errorMessage.value = 'Penyedia tidak mengembalikan model.'
-    } else if (action === 'rank') {
-      const stocks = new Map(context.stocks.map(stock => [stock.symbol, stock]))
-      const picks = data.picks.map(pick => ({ ...pick, qualified: stocks.get(pick.symbol).qualified }))
-      result.value = { picks, model: selectedModel, context }
+    } else if (universe && 'picks' in data) {
+      const stocks = new Map(universe.stocks.map(stock => [stock.symbol, stock]))
+      const picks = data.picks.map(pick => ({ ...pick, qualified: stocks.get(pick.symbol)?.qualified ?? false }))
+      result.value = { kind: 'rank', picks, model: selectedModel, context: universe }
+    } else if (action === 'analyze' && 'text' in data) {
+      result.value = { kind: 'analyze', text: data.text, model: selectedModel, context }
     } else {
-      result.value = { text: data.text, model: selectedModel, context }
+      throw new Error('Format respons AI tidak sesuai.')
     }
   } catch (error) {
-    errorMessage.value = error.data?.message || error.message || 'Permintaan AI gagal. Coba lagi.'
+    errorMessage.value = requestError(error, 'Permintaan AI gagal. Coba lagi.', true)
   } finally {
     pending.value = ''
   }
@@ -106,7 +121,7 @@ async function callAi(action) {
     <p v-if="errorMessage" role="alert">{{ errorMessage }}</p>
     <section v-if="result" class="ai-result" aria-label="Jawaban AI" aria-live="polite">
       <small>{{ result.model }}<template v-if="result.context"> · {{ result.context.horizon }} sesi · {{ result.context.date }}</template></small>
-      <template v-if="result.picks">
+      <template v-if="result.kind === 'rank'">
         <h3>Peringkat AI</h3>
         <p>{{ result.context.stocks.length }} saham dievaluasi. Status filter lokal ditampilkan terpisah.</p>
         <ol v-if="result.picks.length">
