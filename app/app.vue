@@ -1,343 +1,332 @@
 <script setup>
+import { useStockScreener } from "./lib/useStockScreener";
+
 useHead({
-  title: 'Stockpick · Screener BEI',
-  htmlAttrs: { lang: 'id' },
-})
+  title: "Stockpick · Screener BEI",
+  htmlAttrs: { lang: "id" },
+});
 
-const horizon = ref('1')
-const snapshot = shallowRef(null)
-const stockResult = shallowRef(null)
-const directory = shallowRef(null)
-const query = ref('')
-const showSuggestions = ref(false)
-const directoryLoading = ref(false)
-const directoryError = ref(false)
-const searchInput = ref(null)
-const suggestionsList = ref(null)
-const pending = ref('')
-const errorMessage = ref('')
-const percent = new Intl.NumberFormat('id-ID', {
-  style: 'percent',
+const {
+  horizon,
+  stockResult,
+  query,
+  showSuggestions,
+  directoryLoading,
+  directoryError,
+  suggestions,
+  candidates,
+  aiContext,
+  status,
+  pending,
+  openSuggestions,
+  closeSuggestions,
+  onSearchBlur,
+  search,
+  showScreener,
+  loadAiUniverse,
+  scan,
+} = useStockScreener();
+
+const searchInput = ref(null);
+const suggestionsList = ref(null);
+
+const percent = new Intl.NumberFormat("id-ID", {
+  style: "percent",
   maximumFractionDigits: 1,
-})
-const rupiah = new Intl.NumberFormat('id-ID', {
-  style: 'currency',
-  currency: 'IDR',
+});
+const rupiah = new Intl.NumberFormat("id-ID", {
+  style: "currency",
+  currency: "IDR",
   maximumFractionDigits: 2,
-})
-
-const suggestions = computed(() => {
-  const term = query.value.trim().toUpperCase()
-  if (!term || !directory.value) return []
-  const matches = directory.value.filter(({ symbol, name }) =>
-    symbol.includes(term) || name.toUpperCase().includes(term))
-  return matches.sort((a, b) => Number(b.symbol.startsWith(term)) - Number(a.symbol.startsWith(term)))
-    .slice(0, 6)
-})
-
-const candidates = computed(() =>
-  pending.value ? [] : (stockResult.value ?? snapshot.value)?.ranks[horizon.value] ?? [])
-const aiContext = computed(() => {
-  const active = stockResult.value ?? snapshot.value
-  if (!active || pending.value) return null
-  return {
-    date: active.date,
-    horizon: horizon.value,
-    stock: active.stock,
-    candidates: candidates.value.map(({ symbol, close, probability, change, tp, tp_hit, tp_n, accuracy, test_n, plan }) => ({
-      symbol, close, probability, change, tp, tp_hit, tp_n, accuracy, test_n, plan,
-    })),
-  }
-})
-
-const status = computed(() => {
-  if (pending.value === 'search') return 'Mengambil riwayat saham dan mengecek rencana trading.'
-  if (pending.value === 'scan') return 'Mengambil data dan menjalankan backtest. Pemindaian pertama bisa memakan waktu.'
-  if (errorMessage.value) return errorMessage.value
-  if (stockResult.value) {
-    const { date, status } = stockResult.value
-    if (candidates.value.length) return `Rencana ${horizon.value} sesi · Acuan ${date}`
-    return status === 'skipped'
-      ? 'Data historis atau likuiditas belum memenuhi kriteria rencana trading.'
-      : `Belum ada sinyal beli yang lolos untuk ${horizon.value} sesi.`
-  }
-  if (!snapshot.value) return 'Mulai pemindaian untuk mengambil data IDX.'
-
-  const { date, counts, selected, quoted, listed } = snapshot.value
-  const { analyzed, skipped, failed } = counts
-  let headline = 'Belum ada kandidat yang lolos'
-  if (analyzed === 0) headline = 'Data belum cukup untuk analisis'
-  else if (candidates.value.length) headline = `${candidates.value.length} kandidat`
-
-  return `${headline} untuk ${horizon.value} sesi. Sesi ${date} · ${analyzed}/${selected} dianalisis · ${skipped} tersaring · ${failed} gagal · ${quoted}/${listed} cakupan kuotasi.`
-})
-
-async function openSuggestions() {
-  showSuggestions.value = true
-  if (directory.value || directoryLoading.value) return
-  directoryLoading.value = true
-  directoryError.value = false
-  try {
-    directory.value = await $fetch('/api/stocks')
-  } catch {
-    directoryError.value = true
-  } finally {
-    directoryLoading.value = false
-  }
-}
-
-function closeSuggestions() {
-  showSuggestions.value = false
-}
-
-function onSearchBlur(event) {
-  if (!event.currentTarget.contains(event.relatedTarget)) closeSuggestions()
-}
-
-async function search(symbol) {
-  if (pending.value) return
-  const term = query.value.trim().toUpperCase()
-  const match = symbol ?? directory.value?.find(stock => stock.symbol === term)?.symbol
-    ?? (suggestions.value.length === 1 ? suggestions.value[0].symbol : null)
-  if (!match && (suggestions.value.length > 1 || !/^[A-Z0-9]{1,12}$/.test(term))) {
-    showSuggestions.value = true
-    return
-  }
-
-  query.value = match ?? term
-  closeSuggestions()
-  pending.value = 'search'
-  stockResult.value = null
-  errorMessage.value = ''
-  try {
-    stockResult.value = await $fetch('/api/stock', { query: { symbol: query.value } })
-  } catch (error) {
-    errorMessage.value = error.data?.error || error.data?.message || 'Pencarian gagal. Coba lagi.'
-  } finally {
-    pending.value = ''
-  }
-}
-
-function showScreener() {
-  stockResult.value = null
-  errorMessage.value = ''
-}
-
-async function loadAiUniverse() {
-  const selected = horizon.value
-  if (pending.value) throw new Error('Tunggu pemindaian atau pencarian yang sedang berjalan.')
-  if (!snapshot.value) await scan()
-  const stocks = snapshot.value?.universe?.[selected]
-  if (!stocks?.length) throw new Error(errorMessage.value || 'Belum ada saham dengan data cukup untuk horizon ini.')
-  return { date: snapshot.value.date, horizon: selected, stocks }
-}
-
-async function scan() {
-  closeSuggestions()
-  pending.value = 'scan'
-  stockResult.value = null
-  errorMessage.value = ''
-  try {
-    snapshot.value = await $fetch('/api/scan', { method: 'POST' })
-  } catch (error) {
-    errorMessage.value = error.data?.error || error.data?.message || 'Pemindaian gagal. Coba lagi.'
-  } finally {
-    pending.value = ''
-  }
-}
+});
 </script>
 
 <template>
-<main>
-  <header>
-    <div class="brand">Stockpick <span>·</span> Bursa Efek Indonesia</div>
-    <h1>Screener saham</h1>
-    <p>Pindai kandidat naik di BEI atau buka analisis saham yang kamu pilih.</p>
-  </header>
+  <main>
+    <header>
+      <div class="brand">Stockpick <span>·</span> Bursa Efek Indonesia</div>
+      <h1>Screener saham</h1>
+      <p>
+        Pindai kandidat naik di BEI atau buka analisis saham yang kamu pilih.
+      </p>
+    </header>
 
-  <section class="workspace" aria-label="Alat analisis saham">
-    <form class="search-form" @submit.prevent="search()" @focusout="onSearchBlur"
-      @keydown.esc="closeSuggestions(); searchInput.focus()">
-      <label class="control-label" for="stock-query">Cari saham</label>
-      <div class="search-field">
-        <input id="stock-query" ref="searchInput" v-model="query" type="search"
-          placeholder="Kode atau nama perusahaan" autocomplete="off"
-          @focus="openSuggestions" @input="openSuggestions"
-          @keydown.down.prevent="suggestionsList?.querySelector('button')?.focus()">
-        <button type="submit" class="search-button" :disabled="!!pending || !query.trim()">
-          Lihat
+    <section class="workspace" aria-label="Alat analisis saham">
+      <form
+        class="search-form"
+        @submit.prevent="search()"
+        @focusout="onSearchBlur"
+        @keydown.esc="
+          closeSuggestions();
+          searchInput.focus();
+        "
+      >
+        <label class="control-label" for="stock-query">Cari saham</label>
+        <div class="search-field">
+          <input
+            id="stock-query"
+            ref="searchInput"
+            v-model="query"
+            type="search"
+            placeholder="Kode atau nama perusahaan"
+            autocomplete="off"
+            @focus="openSuggestions"
+            @input="openSuggestions"
+            @keydown.down.prevent="
+              suggestionsList?.querySelector('button')?.focus()
+            "
+          />
+          <button
+            type="submit"
+            class="search-button"
+            :disabled="!!pending || !query.trim()"
+          >
+            Lihat
+          </button>
+          <div v-if="showSuggestions && query.trim()" class="suggestions">
+            <ul
+              v-if="suggestions.length"
+              ref="suggestionsList"
+              aria-label="Saham yang cocok"
+            >
+              <li v-for="stock in suggestions" :key="stock.symbol">
+                <button
+                  type="button"
+                  :disabled="!!pending"
+                  @click="search(stock.symbol)"
+                >
+                  <strong>{{ stock.symbol }}</strong
+                  ><span>{{ stock.name }}</span>
+                </button>
+              </li>
+            </ul>
+            <p v-else role="status">
+              {{
+                directoryLoading
+                  ? "Memuat daftar saham…"
+                  : directoryError
+                    ? "Daftar saham gagal dimuat. Masukkan kode saham untuk mencari."
+                    : "Tidak ada saham yang cocok."
+              }}
+            </p>
+          </div>
+        </div>
+      </form>
+
+      <div class="actions">
+        <fieldset>
+          <legend class="control-label">Horizon</legend>
+          <div class="segments">
+            <label v-for="days in ['1', '5']" :key="days">
+              <input
+                v-model="horizon"
+                type="radio"
+                name="horizon"
+                :value="days"
+              />
+              <span>{{ days }} sesi</span>
+            </label>
+          </div>
+        </fieldset>
+        <button
+          type="button"
+          class="scan-button"
+          :disabled="!!pending"
+          @click="scan"
+        >
+          {{ pending === "scan" ? "Memindai…" : "Pindai saham" }}
         </button>
-        <div v-if="showSuggestions && query.trim()" class="suggestions">
-          <ul v-if="suggestions.length" ref="suggestionsList" aria-label="Saham yang cocok">
-            <li v-for="stock in suggestions" :key="stock.symbol">
-              <button type="button" :disabled="!!pending" @click="search(stock.symbol)">
-                <strong>{{ stock.symbol }}</strong><span>{{ stock.name }}</span>
-              </button>
-            </li>
-          </ul>
-          <p v-else role="status">
-            {{ directoryLoading ? 'Memuat daftar saham…' :
-              directoryError ? 'Daftar saham gagal dimuat. Masukkan kode saham untuk mencari.' :
-              'Tidak ada saham yang cocok.' }}
-          </p>
-        </div>
       </div>
-    </form>
+    </section>
 
-    <div class="actions">
-      <fieldset>
-        <legend class="control-label">Horizon</legend>
-        <div class="segments">
-          <label v-for="days in ['1', '5']" :key="days">
-            <input v-model="horizon" type="radio" name="horizon" :value="days">
-            <span>{{ days }} sesi</span>
-          </label>
-        </div>
-      </fieldset>
-      <button type="button" class="scan-button" :disabled="!!pending" @click="scan">
-        {{ pending === 'scan' ? 'Memindai…' : 'Pindai saham' }}
+    <section
+      v-if="stockResult"
+      class="stock-summary"
+      aria-label="Saham dipilih"
+    >
+      <div>
+        <h2>{{ stockResult.stock.symbol }}</h2>
+        <p>{{ stockResult.stock.name }}</p>
+      </div>
+      <div class="stock-price">
+        <small>Penutupan · {{ stockResult.date }}</small>
+        <strong>{{
+          stockResult.stock.close === null
+            ? "Tidak tersedia"
+            : rupiah.format(stockResult.stock.close)
+        }}</strong>
+      </div>
+      <button type="button" class="back-button" @click="showScreener">
+        Kembali ke screener
       </button>
-    </div>
-  </section>
+    </section>
 
-  <section v-if="stockResult" class="stock-summary" aria-label="Saham dipilih">
-    <div>
-      <h2>{{ stockResult.stock.symbol }}</h2>
-      <p>{{ stockResult.stock.name }}</p>
+    <p class="result-status" role="status">{{ status }}</p>
+    <div
+      class="panel"
+      v-if="candidates.length"
+      role="region"
+      aria-label="Peringkat kandidat saham"
+      tabindex="0"
+    >
+      <table aria-label="Hasil screener">
+        <thead>
+          <tr>
+            <th scope="col">Saham</th>
+            <th scope="col">Rentang entry</th>
+            <th scope="col">Peluang naik</th>
+            <th scope="col">Estimasi perubahan</th>
+            <th scope="col">Target TP</th>
+            <th scope="col">Stop-loss</th>
+            <th scope="col">Keluar paling lambat</th>
+            <th scope="col">TP harian tersentuh</th>
+            <th scope="col">Akurasi arah</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in candidates" :key="item.symbol">
+            <td>
+              <strong>{{ item.symbol }}</strong
+              ><small>{{ item.name }}</small>
+            </td>
+            <td>
+              <div>&gt; {{ rupiah.format(item.plan.stop) }}</div>
+              <div>≤ {{ rupiah.format(item.plan.entry_limit) }}</div>
+              <small>{{ item.plan.entry_time }} WIB · sesi 1</small>
+            </td>
+            <td class="up">{{ percent.format(item.probability) }}</td>
+            <td>+{{ percent.format(item.change) }}</td>
+            <td>
+              {{ rupiah.format(item.tp) }} (+{{ percent.format(item.target) }})
+              <small v-if="item.plan.tp_window">
+                Historis: sesi {{ item.plan.tp_window.session }}, candle
+                {{ item.plan.tp_window.start }} WIB
+              </small>
+              <small v-else>Data jam TP belum cukup</small>
+              <small
+                >{{ item.plan.hits }}/{{ item.plan.sample }} TP pada replay
+                intraday</small
+              >
+            </td>
+            <td>
+              {{ rupiah.format(item.plan.stop) }} (−{{
+                percent.format(item.plan.risk)
+              }})
+              <small
+                >{{ item.plan.stops }}/{{ item.plan.sample }} kena stop pada
+                replay</small
+              >
+            </td>
+            <td>
+              {{ item.plan.deadline }} WIB · sesi {{ horizon }}
+              <small
+                >{{ item.plan.timed_exits }}/{{ item.plan.sample }} keluar
+                karena waktu</small
+              >
+            </td>
+            <td>{{ percent.format(item.tp_hit) }} · {{ item.tp_n }} uji</td>
+            <td>{{ percent.format(item.accuracy) }} · {{ item.test_n }} uji</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
-    <div class="stock-price">
-      <small>Penutupan · {{ stockResult.date }}</small>
-      <strong>{{ stockResult.stock.close === null ? 'Tidak tersedia' : rupiah.format(stockResult.stock.close) }}</strong>
-    </div>
-    <button type="button" class="back-button" @click="showScreener">Kembali ke screener</button>
-  </section>
-
-  <p class="result-status" role="status">{{ status }}</p>
-  <div
-    class="panel"
-    v-if="candidates.length"
-    role="region"
-    aria-label="Peringkat kandidat saham"
-    tabindex="0"
-  >
-    <table aria-label="Hasil screener">
-      <thead>
-        <tr>
-          <th scope="col">Saham</th>
-          <th scope="col">Rentang entry</th>
-          <th scope="col">Peluang naik</th>
-          <th scope="col">Estimasi perubahan</th>
-          <th scope="col">Target TP</th>
-          <th scope="col">Stop-loss</th>
-          <th scope="col">Keluar paling lambat</th>
-          <th scope="col">TP harian tersentuh</th>
-          <th scope="col">Akurasi arah</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="item in candidates" :key="item.symbol">
-          <td><strong>{{ item.symbol }}</strong><small>{{ item.name }}</small></td>
-          <td>
-            <div>&gt; {{ rupiah.format(item.plan.stop) }}</div>
-            <div>≤ {{ rupiah.format(item.plan.entry_limit) }}</div>
-            <small>{{ item.plan.entry_time }} WIB · sesi 1</small>
-          </td>
-          <td class="up">{{ percent.format(item.probability) }}</td>
-          <td>+{{ percent.format(item.change) }}</td>
-          <td>
-            {{ rupiah.format(item.tp) }} (+{{ percent.format(item.target) }})
-            <small v-if="item.plan.tp_window">
-              Historis: sesi {{ item.plan.tp_window.session }}, candle {{ item.plan.tp_window.start }} WIB
-            </small>
-            <small v-else>Data jam TP belum cukup</small>
-            <small>{{ item.plan.hits }}/{{ item.plan.sample }} TP pada replay intraday</small>
-          </td>
-          <td>
-            {{ rupiah.format(item.plan.stop) }} (−{{ percent.format(item.plan.risk) }})
-            <small>{{ item.plan.stops }}/{{ item.plan.sample }} kena stop pada replay</small>
-          </td>
-          <td>
-            {{ item.plan.deadline }} WIB · sesi {{ horizon }}
-            <small>{{ item.plan.timed_exits }}/{{ item.plan.sample }} keluar karena waktu</small>
-          </td>
-          <td>{{ percent.format(item.tp_hit) }} · {{ item.tp_n }} uji</td>
-          <td>{{ percent.format(item.accuracy) }} · {{ item.test_n }} uji</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  <AiAnalysis :context="aiContext" :load-universe="loadAiUniverse" :busy="!!pending" />
-  <UiAccordion title="Cara membaca rencana dan hasil">
-    <p>
-      Sesi 1 adalah hari bursa pertama setelah tanggal acuan di atas. Rencana
-      entry hanya berlaku saat pembukaan 09.00 WIB. Lewati jika pembukaan sudah
-      lewat atau harga buka di luar batas entry. Setelah masuk, aturan jual
-      adalah keluar ketika harga menyentuh TP atau stop-loss. Jika keduanya
-      belum tersentuh, keluar pada 15.45 WIB di sesi terakhir horizon.
-    </p>
-    <p>
-      Stop-loss memakai median rentang harga 20 sesi terakhir relatif terhadap
-      harga acuan, dengan batas 1–10%. Jam TP historis memakai median candle dari
-      minimal tiga kejadian TP pada replay 15 menit selama satu bulan, dengan
-      level relatif yang sama. Jika TP dan stop tersentuh di candle yang sama
-      dan harga buka di antara kedua level, replay mencatat stop lebih dulu.
-      Angka ini menggambarkan riwayat. Harga aktual bisa melewati level saat gap,
-      dan aplikasi tidak mengirim order.
-    </p>
-    <p>
-      Harga acuan berasal dari penutupan terakhir. Estimasi membandingkan
-      momentum harga saat ini dengan pola yang sama dalam riwayat dua tahun.
-      Target TP memakai median kenaikan intrahorizon tertinggi dari pola
-      tersebut. Harga TP adalah estimasi teoretis sebelum penyesuaian fraksi
-      harga.
-    </p>
-    <p>
-      Akurasi arah dan TP tersentuh dihitung dari backtest berjalan. Pada
-      setiap sesi uji, model hanya memakai hasil yang sudah tersedia. TP
-      tersentuh berarti harga tertinggi mencapai target simulasi. Angka ini
-      mengabaikan biaya dan eksekusi order.
-    </p>
-    <p>
-      Pemindaian memprioritaskan hingga 90 saham dari daftar BEI dengan
-      kapitalisasi di atas Rp1 triliun dan volume rata-rata 3 bulan
-      tertinggi. Riwayat harus lengkap untuk 20 sesi terakhir dengan median
-      nilai transaksi perkiraan minimal Rp5 miliar per sesi. Hanya kandidat
-      dengan estimasi peluang naik minimal 55%, proyeksi perubahan positif,
-      minimal 10 uji TP, dan skor Brier lebih baik dari peluang historis
-      dasar yang ditampilkan.
-    </p>
-  </UiAccordion>
-</main>
+    <AiAnalysis
+      :context="aiContext"
+      :load-universe="loadAiUniverse"
+      :busy="!!pending"
+    />
+    <UiAccordion title="Cara membaca rencana dan hasil">
+      <p>
+        Sesi 1 adalah hari bursa pertama setelah tanggal acuan di atas. Rencana
+        entry hanya berlaku saat pembukaan 09.00 WIB. Lewati jika pembukaan
+        sudah lewat atau harga buka di luar batas entry. Setelah masuk, aturan
+        jual adalah keluar ketika harga menyentuh TP atau stop-loss. Jika
+        keduanya belum tersentuh, keluar pada 15.45 WIB di sesi terakhir
+        horizon.
+      </p>
+      <p>
+        Stop-loss memakai median rentang harga 20 sesi terakhir relatif terhadap
+        harga acuan, dengan batas 1–10%. Jam TP historis memakai median candle
+        dari minimal tiga kejadian TP pada replay 15 menit selama satu bulan,
+        dengan level relatif yang sama. Jika TP dan stop tersentuh di candle
+        yang sama dan harga buka di antara kedua level, replay mencatat stop
+        lebih dulu. Angka ini menggambarkan riwayat. Harga aktual bisa melewati
+        level saat gap, dan aplikasi tidak mengirim order.
+      </p>
+      <p>
+        Harga acuan berasal dari penutupan terakhir. Estimasi membandingkan
+        momentum harga saat ini dengan pola yang sama dalam riwayat dua tahun.
+        Target TP memakai median kenaikan intrahorizon tertinggi dari pola
+        tersebut. Harga TP adalah estimasi teoretis sebelum penyesuaian fraksi
+        harga.
+      </p>
+      <p>
+        Akurasi arah dan TP tersentuh dihitung dari backtest berjalan. Pada
+        setiap sesi uji, model hanya memakai hasil yang sudah tersedia. TP
+        tersentuh berarti harga tertinggi mencapai target simulasi. Angka ini
+        mengabaikan biaya dan eksekusi order.
+      </p>
+      <p>
+        Pemindaian memprioritaskan hingga 90 saham dari daftar BEI dengan
+        kapitalisasi di atas Rp1 triliun dan volume rata-rata 3 bulan tertinggi.
+        Riwayat harus lengkap untuk 20 sesi terakhir dengan median nilai
+        transaksi perkiraan minimal Rp5 miliar per sesi. Hanya kandidat dengan
+        estimasi peluang naik minimal 55%, proyeksi perubahan positif, minimal
+        10 uji TP, dan skor Brier lebih baik dari peluang historis dasar yang
+        ditampilkan.
+      </p>
+    </UiAccordion>
+  </main>
 </template>
 
 <style>
 :root {
   color-scheme: dark;
-  font: 16px system-ui, sans-serif;
+  font:
+    16px system-ui,
+    sans-serif;
   color: #ecf2f8;
   background: #101720;
   --line: #354553;
   --muted: #aebdcc;
   --accent: #a7e7cd;
 }
-* { box-sizing: border-box; }
-body { margin: 0; }
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
 main {
   max-width: 1210px;
   margin: auto;
   padding: clamp(28px, 6vw, 68px) clamp(16px, 4vw, 40px);
 }
-header { padding-bottom: 24px; }
-.brand { color: var(--muted); font-size: .82rem; font-weight: 600; }
-.brand span { color: var(--accent); margin: 0 .3em; }
+header {
+  padding-bottom: 24px;
+}
+.brand {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.brand span {
+  color: var(--accent);
+  margin: 0 0.3em;
+}
 h1 {
   font-size: clamp(2.2rem, 6vw, 4rem);
-  letter-spacing: -.06em;
+  letter-spacing: -0.06em;
   line-height: 1.04;
   margin: 12px 0;
 }
-p { color: var(--muted); line-height: 1.55; }
-header p { margin: 0; }
+p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+header p {
+  margin: 0;
+}
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -348,16 +337,24 @@ header p { margin: 0; }
   border-radius: 12px;
   background: #192430;
 }
-.search-form, .search-field { min-width: 0; }
+.search-form,
+.search-field {
+  min-width: 0;
+}
 .control-label {
   display: block;
   margin: 0 0 8px;
   color: #d5e0ea;
-  font-size: .82rem;
+  font-size: 0.82rem;
   font-weight: 650;
 }
-.search-field { display: flex; gap: 8px; position: relative; }
-input[type="search"], button {
+.search-field {
+  display: flex;
+  gap: 8px;
+  position: relative;
+}
+input[type="search"],
+button {
   font: inherit;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -370,9 +367,19 @@ input[type="search"] {
   color: inherit;
   background: #101720;
 }
-button { font-weight: 650; color: inherit; background: #243343; cursor: pointer; }
-button:disabled { opacity: .55; cursor: default; }
-button:not(:disabled):hover { filter: brightness(1.15); }
+button {
+  font-weight: 650;
+  color: inherit;
+  background: #243343;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+button:not(:disabled):hover {
+  filter: brightness(1.15);
+}
 .suggestions {
   position: absolute;
   z-index: 2;
@@ -383,7 +390,11 @@ button:not(:disabled):hover { filter: brightness(1.15); }
   background: #202d3a;
   box-shadow: 0 12px 24px #0005;
 }
-.suggestions ul { margin: 0; padding: 4px; list-style: none; }
+.suggestions ul {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+}
 .suggestions button {
   width: 100%;
   display: grid;
@@ -394,14 +405,47 @@ button:not(:disabled):hover { filter: brightness(1.15); }
   text-align: left;
   background: transparent;
 }
-.suggestions button:hover, .suggestions button:focus-visible { background: #2c3c4d; }
-.suggestions span { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
-.suggestions p { margin: 12px; }
-.actions { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
-fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-.segments { display: flex; background: #101720; border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
-.segments label { position: relative; cursor: pointer; }
-.segments input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.suggestions button:hover,
+.suggestions button:focus-visible {
+  background: #2c3c4d;
+}
+.suggestions span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.suggestions p {
+  margin: 12px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.segments {
+  display: flex;
+  background: #101720;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 3px;
+}
+.segments label {
+  position: relative;
+  cursor: pointer;
+}
+.segments input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
 .segments span {
   display: grid;
   place-items: center;
@@ -411,10 +455,23 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
   white-space: nowrap;
   color: var(--muted);
 }
-.segments input:checked + span { background: #354e61; color: #fff; font-weight: 650; }
-.segments input:focus-visible + span { outline: 2px solid #ecce81; outline-offset: 1px; }
-.scan-button { background: var(--accent); color: #102822; border-color: transparent; }
-.result-status { margin: 20px 0 12px; }
+.segments input:checked + span {
+  background: #354e61;
+  color: #fff;
+  font-weight: 650;
+}
+.segments input:focus-visible + span {
+  outline: 2px solid #ecce81;
+  outline-offset: 1px;
+}
+.scan-button {
+  background: var(--accent);
+  color: #102822;
+  border-color: transparent;
+}
+.result-status {
+  margin: 20px 0 12px;
+}
 .stock-summary {
   display: flex;
   flex-wrap: wrap;
@@ -423,15 +480,37 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
   padding: 16px 0;
   border-bottom: 1px solid var(--line);
 }
-.stock-summary h2, .stock-summary p { margin: 0; }
-.stock-price strong { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
-.back-button { margin-left: auto; }
+.stock-summary h2,
+.stock-summary p {
+  margin: 0;
+}
+.stock-price strong {
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+.back-button {
+  margin-left: auto;
+}
 @media (max-width: 680px) {
-  .workspace { grid-template-columns: minmax(0, 1fr); padding: 12px; gap: 16px; }
-  .search-field { flex-wrap: wrap; }
-  .suggestions { position: static; flex: 0 0 100%; box-shadow: none; }
-  .actions { justify-content: space-between; }
-  .back-button { margin-left: 0; }
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+    gap: 16px;
+  }
+  .search-field {
+    flex-wrap: wrap;
+  }
+  .suggestions {
+    position: static;
+    flex: 0 0 100%;
+    box-shadow: none;
+  }
+  .actions {
+    justify-content: space-between;
+  }
+  .back-button {
+    margin-left: 0;
+  }
 }
 :focus-visible {
   outline: 2px solid #ecce81;
